@@ -34,22 +34,24 @@ class YouTubeDownloader:
             }]
             final_ext = "mp3"
         else:
-            # Use bestvideo+bestaudio for proper DASH stream merging on modern YouTube
+            # Robust format selection with fallback chains for all YouTube videos including Shorts
+            # bestvideo* matches video-only OR video+audio combined formats (more reliable)
+            # The / operator provides fallback: single-stream -> DASH streams -> absolute best
             quality_map = {
-                "144": "bestvideo[height<=144]+bestaudio/best[height<=144]/best",
-                "240": "bestvideo[height<=240]+bestaudio/best[height<=240]/best",
-                "360": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-                "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-                "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-                "1440": "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best",
-                "2160": "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
-                "best": "bestvideo+bestaudio/best",
+                "144": "best[height<=144]/bestvideo*[height<=144]+bestaudio/best",
+                "240": "best[height<=240]/bestvideo*[height<=240]+bestaudio/best",
+                "360": "best[height<=360]/bestvideo*[height<=360]+bestaudio/best",
+                "480": "best[height<=480]/bestvideo*[height<=480]+bestaudio/best",
+                "720": "best[height<=720]/bestvideo*[height<=720]+bestaudio/best",
+                "1080": "best[height<=1080]/bestvideo*[height<=1080]+bestaudio/best",
+                "1440": "best[height<=1440]/bestvideo*[height<=1440]+bestaudio/best",
+                "2160": "best[height<=2160]/bestvideo*[height<=2160]+bestaudio/best",
+                "best": "bestvideo*+bestaudio/best",
             }
-            format_spec = quality_map.get(quality, "bestvideo[height<=720]+bestaudio/best")
+            format_spec = quality_map.get(quality, "best[height<=720]/bestvideo*[height<=720]+bestaudio/best")
             postprocessors = [{
                 'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
+                'preferre dformat': 'mp4',
             }]
             final_ext = "mp4"
         
