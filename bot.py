@@ -17,7 +17,9 @@ import os
 import sys
 import logging
 import asyncio
+import threading
 from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,7 +36,7 @@ from telegram.ext import (
 
 # Configuration
 from config import (
-    BOT_TOKEN, ADMIN_IDS, DATABASE_PATH, LOGS_DIR,
+    BOT_TOKEN, ADMIN_IDS, DATABASE_PATH, LOGS_DIR, DOWNLOADS_DIR,
     LOG_LEVEL, validate_config, maintenance_mode
 )
 
@@ -69,6 +71,31 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Lightweight HTTP handler for Render health checks"""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    
+    def log_message(self, format, *args):
+        # Suppress health check logs to avoid noise
+        pass
+
+
+def start_health_server(port=None):
+    """Start a lightweight HTTP server for Render health checks"""
+    if port is None:
+        port = int(os.environ.get("PORT", 8080))
+    try:
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f"Health check server started on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
 
 
 class VideoDownloaderBot:
@@ -188,6 +215,19 @@ class VideoDownloaderBot:
     def run(self):
         """Run the bot"""
         logger.info("Starting Video Downloader Bot...")
+        
+        # Start health check server in background thread (required for Render)
+        health_port = os.environ.get("PORT")
+        if health_port:
+            health_port = int(health_port)
+            health_thread = threading.Thread(
+                target=start_health_server,
+                args=(health_port,),
+                daemon=True,
+                name="health-server"
+            )
+            health_thread.start()
+            logger.info(f"Health check server thread started on port {health_port}")
         
         # Initialize components
         asyncio.run(self.init_components())
