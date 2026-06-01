@@ -190,7 +190,7 @@ class VideoDownloaderBot:
         logger.info("Starting Video Downloader Bot...")
         
         # Initialize components
-        asyncio.get_event_loop().run_until_complete(self.init_components())
+        asyncio.run(self.init_components())
         
         # Build application
         self.application = (
