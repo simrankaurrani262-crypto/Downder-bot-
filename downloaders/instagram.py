@@ -7,6 +7,7 @@ Uses multiple methods: yt-dlp, instaloader, RapidAPI fallback
 import os
 import json
 import asyncio
+import logging
 import aiohttp
 import instaloader
 import yt_dlp
@@ -19,6 +20,8 @@ from config import (
 )
 from utils.helpers import sanitize_filename
 
+logger = logging.getLogger(__name__)
+
 
 class InstagramDownloader:
     def __init__(self):
@@ -27,7 +30,7 @@ class InstagramDownloader:
         self.loader = None
         self.session = None
         self._init_instaloader()
-    
+
     def _init_instaloader(self):
         """Initialize instaloader session"""
         try:
@@ -43,7 +46,7 @@ class InstagramDownloader:
                 filename_pattern='{shortcode}',
                 quiet=True,
             )
-            
+
             # Try to load session
             if INSTAGRAM_SESSION_FILE.exists():
                 try:
@@ -59,11 +62,11 @@ class InstagramDownloader:
                     self.loader.save_session_to_file(str(INSTAGRAM_SESSION_FILE))
                 except Exception:
                     pass
-                    
+
         except Exception as e:
-            print(f"Instaloader init error: {e}")
+            logger.warning(f"Instaloader init error: {e}")
             self.loader = None
-    
+
     async def get_info(self, url: str) -> Optional[Dict[str, Any]]:
         """Get Instagram post information"""
         try:
@@ -71,36 +74,45 @@ class InstagramDownloader:
             info = await self._get_info_ytdlp(url)
             if info:
                 return info
-            
+
             # Try instaloader
             info = await self._get_info_instaloader(url)
             if info:
                 return info
-            
+
             # Try RapidAPI
             info = await self._get_info_rapidapi(url)
             if info:
                 return info
-            
+
             return None
-            
+
         except Exception as e:
-            print(f"Error getting Instagram info: {e}")
+            logger.error(f"Error getting Instagram info: {e}")
             return None
-    
+
     async def _get_info_ytdlp(self, url: str) -> Optional[Dict[str, Any]]:
         """Get info using yt-dlp"""
         try:
             loop = asyncio.get_event_loop()
-            
+
             def _extract():
-                opts = {'quiet': True, 'no_warnings': True}
+                opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'skip_download': True,
+                    'ignore_no_formats_error': True,
+                }
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
-            
+
             info = await loop.run_in_executor(None, _extract)
-            
+
             if info:
+                # Handle playlist/entries
+                if 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+
                 return {
                     'id': info.get('id', ''),
                     'title': info.get('title', 'Instagram Post'),
@@ -116,23 +128,24 @@ class InstagramDownloader:
                     'url': url,
                 }
             return None
-            
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"yt-dlp Instagram info failed: {e}")
             return None
-    
+
     async def _get_info_instaloader(self, url: str) -> Optional[Dict[str, Any]]:
         """Get info using instaloader"""
         if not self.loader:
             return None
-        
+
         try:
             from utils.helpers import extract_instagram_shortcode
             shortcode = extract_instagram_shortcode(url)
             if not shortcode:
                 return None
-            
+
             loop = asyncio.get_event_loop()
-            
+
             def _get_post():
                 post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
                 return {
@@ -149,28 +162,29 @@ class InstagramDownloader:
                     'is_video': post.is_video,
                     'url': url,
                 }
-            
+
             return await loop.run_in_executor(None, _get_post)
-            
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"Instaloader info failed: {e}")
             return None
-    
+
     async def _get_info_rapidapi(self, url: str) -> Optional[Dict[str, Any]]:
         """Get info using RapidAPI"""
         if not RAPIDAPI_KEY:
             return None
-        
+
         try:
             if not self.session or self.session.closed:
                 self.session = aiohttp.ClientSession()
-            
+
             headers = {
                 "X-RapidAPI-Key": RAPIDAPI_KEY,
                 "X-RapidAPI-Host": RAPIDAPI_HOST,
             }
-            
+
             params = {"url": url}
-            
+
             async with self.session.get(
                 f"https://{RAPIDAPI_HOST}/index",
                 headers=headers,
@@ -191,10 +205,11 @@ class InstagramDownloader:
                             'url': url,
                         }
                 return None
-                
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"RapidAPI info failed: {e}")
             return None
-    
+
     async def download(self, url: str, quality: str, download_id: str,
                       progress_callback: Callable = None) -> Optional[Dict[str, Any]]:
         """
@@ -205,43 +220,46 @@ class InstagramDownloader:
             'file_path': None, 'title': '', 'duration': 0,
             'file_size': 0, 'thumbnail': None, 'error': None
         }
-        
+
         # Method 1: yt-dlp
         try:
             download_result = await self._download_ytdlp(url, quality, download_id, progress_callback)
             if download_result and download_result.get('file_path'):
                 return download_result
         except Exception as e:
+            logger.debug(f"yt-dlp download failed: {e}")
             result['error'] = str(e)
-        
+
         # Method 2: instaloader
         try:
             download_result = await self._download_instaloader(url, quality, download_id, progress_callback)
             if download_result and download_result.get('file_path'):
                 return download_result
         except Exception as e:
+            logger.debug(f"Instaloader download failed: {e}")
             result['error'] = str(e)
-        
+
         # Method 3: RapidAPI
         try:
             download_result = await self._download_rapidapi(url, quality, download_id, progress_callback)
             if download_result and download_result.get('file_path'):
                 return download_result
         except Exception as e:
+            logger.debug(f"RapidAPI download failed: {e}")
             result['error'] = str(e)
-        
+
         if not result['error']:
             result['error'] = "Failed to download from Instagram. Content may be private or unavailable."
-        
+
         return result
-    
+
     async def _download_ytdlp(self, url: str, quality: str, download_id: str,
                              progress_callback: Callable = None) -> Optional[Dict[str, Any]]:
         """Download using yt-dlp"""
         try:
             loop = asyncio.get_event_loop()
             output_template = str(self.downloads_dir / f"ig_%(id)s_{download_id}.%(ext)s")
-            
+
             def progress_hook(d):
                 if d['status'] == 'downloading' and progress_callback:
                     downloaded = d.get('downloaded_bytes', 0)
@@ -250,7 +268,7 @@ class InstagramDownloader:
                         progress_callback(downloaded, total, "downloading"),
                         loop
                     )
-            
+
             if quality == "audio":
                 ydl_opts = {
                     'format': 'bestaudio/best',
@@ -264,34 +282,47 @@ class InstagramDownloader:
                     }],
                     'progress_hooks': [progress_hook] if progress_callback else [],
                     'max_filesize': MAX_FILE_SIZE_BYTES,
+                    'ignore_no_formats_error': True,
                 }
             else:
                 ydl_opts = {
-                    'format': 'best',
+                    'format': 'best[ext=mp4]/best',
                     'outtmpl': output_template,
                     'quiet': True,
                     'no_warnings': True,
                     'postprocessors': [{
                         'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
+                        'preferredformat': 'mp4',
                     }],
                     'progress_hooks': [progress_hook] if progress_callback else [],
                     'max_filesize': MAX_FILE_SIZE_BYTES,
+                    'merge_output_format': 'mp4',
+                    'ignore_no_formats_error': True,
                 }
-            
+
             def _download():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
+
+                    # Handle playlists
+                    if 'entries' in info and info['entries']:
+                        info = info['entries'][0]
+
                     video_id = info.get('id', '')
                     ext = 'mp3' if quality == 'audio' else 'mp4'
                     expected_file = self.downloads_dir / f"ig_{video_id}_{download_id}.{ext}"
-                    
+
                     if not expected_file.exists():
                         for f in self.downloads_dir.glob(f"ig_{video_id}_{download_id}.*"):
                             if f.is_file():
                                 expected_file = f
                                 break
-                    
+                        if not expected_file.exists():
+                            for f in self.downloads_dir.glob(f"ig_*_{download_id}.*"):
+                                if f.is_file():
+                                    expected_file = f
+                                    break
+
                     return {
                         'file_path': str(expected_file) if expected_file.exists() else None,
                         'title': info.get('title', 'Instagram Post'),
@@ -299,12 +330,12 @@ class InstagramDownloader:
                         'thumbnail': info.get('thumbnail', ''),
                         'uploader': info.get('uploader', ''),
                     }
-            
+
             download_result = await asyncio.wait_for(
                 loop.run_in_executor(None, _download),
                 timeout=300
             )
-            
+
             if download_result['file_path'] and os.path.exists(download_result['file_path']):
                 file_size = os.path.getsize(download_result['file_path'])
                 return {
@@ -316,38 +347,39 @@ class InstagramDownloader:
                     'uploader': download_result['uploader'],
                 }
             return None
-            
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"yt-dlp download error: {e}")
             return None
-    
+
     async def _download_instaloader(self, url: str, quality: str, download_id: str,
                                    progress_callback: Callable = None) -> Optional[Dict[str, Any]]:
         """Download using instaloader"""
         if not self.loader:
             return None
-        
+
         try:
             from utils.helpers import extract_instagram_shortcode
             shortcode = extract_instagram_shortcode(url)
             if not shortcode:
                 return None
-            
+
             loop = asyncio.get_event_loop()
             download_path = self.downloads_dir / f"ig_{shortcode}_{download_id}.mp4"
-            
+
             def _download():
                 post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-                
+
                 if not post.is_video and quality != "audio":
                     return None
-                
+
                 # Download video
                 if post.is_video:
                     video_url = post.video_url
                     if video_url:
                         import urllib.request
                         urllib.request.urlretrieve(video_url, str(download_path))
-                
+
                 return {
                     'file_path': str(download_path) if download_path.exists() else None,
                     'title': post.caption[:100] if post.caption else 'Instagram Post',
@@ -355,15 +387,15 @@ class InstagramDownloader:
                     'thumbnail': str(post.url) if post.url else '',
                     'uploader': post.owner_username,
                 }
-            
+
             if progress_callback:
                 await progress_callback(0, 100, "downloading")
-            
+
             download_result = await asyncio.wait_for(
                 loop.run_in_executor(None, _download),
                 timeout=300
             )
-            
+
             if download_result and download_result.get('file_path'):
                 file_size = os.path.getsize(download_result['file_path'])
                 return {
@@ -371,31 +403,32 @@ class InstagramDownloader:
                     'file_size': file_size,
                 }
             return None
-            
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"Instaloader download error: {e}")
             return None
-    
+
     async def _download_rapidapi(self, url: str, quality: str, download_id: str,
                                 progress_callback: Callable = None) -> Optional[Dict[str, Any]]:
         """Download using RapidAPI"""
         if not RAPIDAPI_KEY:
             return None
-        
+
         try:
             if not self.session or self.session.closed:
                 self.session = aiohttp.ClientSession()
-            
+
             if progress_callback:
                 await progress_callback(0, 100, "downloading")
-            
+
             # First get download URL from API
             headers = {
                 "X-RapidAPI-Key": RAPIDAPI_KEY,
                 "X-RapidAPI-Host": RAPIDAPI_HOST,
             }
-            
+
             params = {"url": url}
-            
+
             async with self.session.get(
                 f"https://{RAPIDAPI_HOST}/index",
                 headers=headers,
@@ -404,33 +437,33 @@ class InstagramDownloader:
             ) as response:
                 if response.status != 200:
                     return None
-                
+
                 data = await response.json()
                 if not data or not isinstance(data, list) or len(data) == 0:
                     return None
-                
+
                 item = data[0]
                 media_url = item.get('media_link', '') or item.get('video_url', '')
-                
+
                 if not media_url:
                     return None
-                
+
                 if progress_callback:
                     await progress_callback(50, 100, "downloading")
-                
+
                 # Download the file
                 ext = 'mp3' if quality == 'audio' else 'mp4'
                 download_path = self.downloads_dir / f"ig_api_{download_id}.{ext}"
-                
+
                 async with self.session.get(media_url, timeout=aiohttp.ClientTimeout(total=120)) as media_response:
                     if media_response.status == 200:
                         with open(download_path, 'wb') as f:
                             async for chunk in media_response.content.iter_chunked(8192):
                                 f.write(chunk)
-                
+
                 if progress_callback:
                     await progress_callback(100, 100, "processing")
-                
+
                 if download_path.exists():
                     file_size = os.path.getsize(str(download_path))
                     return {
@@ -442,10 +475,11 @@ class InstagramDownloader:
                         'uploader': item.get('username', 'Unknown'),
                     }
                 return None
-                
-        except Exception:
+
+        except Exception as e:
+            logger.debug(f"RapidAPI download error: {e}")
             return None
-    
+
     def cleanup(self, file_path: str):
         """Remove downloaded file"""
         try:
@@ -453,7 +487,7 @@ class InstagramDownloader:
                 os.remove(file_path)
         except Exception:
             pass
-    
+
     async def close(self):
         """Close aiohttp session"""
         if self.session and not self.session.closed:
