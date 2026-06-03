@@ -5,6 +5,7 @@ Supports multiple qualities, audio extraction, Shorts, and live streams
 
 import os
 import asyncio
+import logging
 import yt_dlp
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
@@ -14,17 +15,19 @@ from utils.helpers import (
     format_duration, format_file_size
 )
 
+logger = logging.getLogger(__name__)
+
 
 class YouTubeDownloader:
     def __init__(self):
         self.downloads_dir = Path(DOWNLOADS_DIR)
         self.downloads_dir.mkdir(exist_ok=True)
         self.active_downloads = {}
-    
+
     def _get_ydl_opts(self, quality: str, download_id: str, progress_hook: Callable = None) -> Dict[str, Any]:
         """Get yt-dlp options based on quality preference"""
         output_template = str(self.downloads_dir / f"%(id)s_{download_id}.%(ext)s")
-        
+
         if quality == "audio":
             format_spec = "bestaudio/best"
             postprocessors = [{
@@ -34,71 +37,117 @@ class YouTubeDownloader:
             }]
             final_ext = "mp3"
         else:
-            # Use bestvideo+bestaudio for proper DASH stream merging on modern YouTube
+            # Robust format selection with fallback chains for all YouTube videos including Shorts
+            # Format sort prefers mp4/m4a for Telegram compatibility
+            # The chain tries: merged format -> separate video+audio -> absolute fallback
             quality_map = {
-                "144": "bestvideo[height<=144]+bestaudio/best[height<=144]/best",
-                "240": "bestvideo[height<=240]+bestaudio/best[height<=240]/best",
-                "360": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-                "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-                "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-                "1440": "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best",
-                "2160": "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
-                "best": "bestvideo+bestaudio/best",
+                "144":  ("best[height<=144][ext=mp4]/best[height<=144]/"
+                         "bestvideo*[height<=144][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=144]+bestaudio/best"),
+                "240":  ("best[height<=240][ext=mp4]/best[height<=240]/"
+                         "bestvideo*[height<=240][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=240]+bestaudio/best"),
+                "360":  ("best[height<=360][ext=mp4]/best[height<=360]/"
+                         "bestvideo*[height<=360][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=360]+bestaudio/best"),
+                "480":  ("best[height<=480][ext=mp4]/best[height<=480]/"
+                         "bestvideo*[height<=480][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=480]+bestaudio/best"),
+                "720":  ("best[height<=720][ext=mp4]/best[height<=720]/"
+                         "bestvideo*[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=720]+bestaudio/best"),
+                "1080": ("best[height<=1080][ext=mp4]/best[height<=1080]/"
+                         "bestvideo*[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=1080]+bestaudio/best"),
+                "1440": ("best[height<=1440][ext=mp4]/best[height<=1440]/"
+                         "bestvideo*[height<=1440][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=1440]+bestaudio/best"),
+                "2160": ("best[height<=2160][ext=mp4]/best[height<=2160]/"
+                         "bestvideo*[height<=2160][ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*[height<=2160]+bestaudio/best"),
+                "best": ("best[ext=mp4]/best/"
+                         "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/"
+                         "bestvideo*+bestaudio/best"),
             }
-            format_spec = quality_map.get(quality, "bestvideo[height<=720]+bestaudio/best")
+            format_spec = quality_map.get(quality, quality_map["720"])
+            # FIX: Use 'preferedformat' (1 r) not 'preferredformat' (2 r)
+            # yt-dlp uses British spelling - this was the root cause of the error:
+            # "FFmpegVideoConvertorPP.__init__() got an unexpected keyword argument 'preferredformat'"
             postprocessors = [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
             }]
             final_ext = "mp4"
-        
+
         opts = {
             'format': format_spec,
             'outtmpl': output_template,
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
             'postprocessors': postprocessors,
             'noplaylist': True,
             'max_filesize': MAX_FILE_SIZE_BYTES,
-            'retries': 3,
-            'fragment_retries': 3,
+            'retries': 5,
+            'fragment_retries': 5,
             'skip_unavailable_fragments': True,
             'keepvideo': False,
             'merge_output_format': 'mp4',
+            'ignore_no_formats_error': True,
+            'format_sort': ['res', 'ext:mp4:m4a'],
         }
-        
-        # Add cookies if available
+
+        # Add cookies if file exists and is not empty
         if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-            opts['cookiefile'] = YOUTUBE_COOKIES_FILE
-        
+            try:
+                if os.path.getsize(YOUTUBE_COOKIES_FILE) > 0:
+                    opts['cookiefile'] = YOUTUBE_COOKIES_FILE
+            except OSError:
+                pass
+
         # Add progress hook
         if progress_hook:
             opts['progress_hooks'] = [progress_hook]
-        
+
         return opts, final_ext
-    
+
     async def get_info(self, url: str) -> Optional[Dict[str, Any]]:
         """Get video information without downloading"""
         try:
             loop = asyncio.get_event_loop()
-            
+
             def _extract_info():
                 opts = {
                     'quiet': True,
                     'no_warnings': True,
-                    'extract_flat': False,
+                    'skip_download': True,
+                    'ignore_no_formats_error': True,
+                    'format': 'best/bestvideo*+bestaudio',
                 }
+                # Add cookies if available
                 if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-                    opts['cookiefile'] = YOUTUBE_COOKIES_FILE
-                
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(url, download=False)
-            
+                    try:
+                        if os.path.getsize(YOUTUBE_COOKIES_FILE) > 0:
+                            opts['cookiefile'] = YOUTUBE_COOKIES_FILE
+                    except OSError:
+                        pass
+
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+                except yt_dlp.utils.ExtractorError as e:
+                    logger.warning(f"Extractor error for {url}: {e}")
+                    # Try with less restrictive options
+                    opts['extract_flat'] = True
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+
             info = await loop.run_in_executor(None, _extract_info)
-            
+
             if info:
+                # Handle both direct info and flat playlist entries
+                if 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+
                 return {
                     'id': info.get('id', ''),
                     'title': info.get('title', 'Unknown'),
@@ -116,11 +165,11 @@ class YouTubeDownloader:
                     'webpage_url': info.get('webpage_url', url),
                 }
             return None
-            
+
         except Exception as e:
-            print(f"Error getting video info: {e}")
+            logger.error(f"Error getting video info for {url}: {e}")
             return None
-    
+
     async def download(self, url: str, quality: str, download_id: str,
                       progress_callback: Callable = None) -> Optional[Dict[str, Any]]:
         """
@@ -130,41 +179,51 @@ class YouTubeDownloader:
         try:
             loop = asyncio.get_event_loop()
             result = {"file_path": None, "title": "", "duration": 0, "file_size": 0, "thumbnail": None}
-            
+
             # Progress hook for yt-dlp
             def progress_hook(d):
                 if d['status'] == 'downloading' and progress_callback:
                     downloaded = d.get('downloaded_bytes', 0)
                     total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
                     asyncio.run_coroutine_threadsafe(
-                        progress_callback(downloaded, total, "downloading"), 
+                        progress_callback(downloaded, total, "downloading"),
                         loop
                     )
                 elif d['status'] == 'finished' and progress_callback:
                     asyncio.run_coroutine_threadsafe(
-                        progress_callback(100, 100, "processing"), 
+                        progress_callback(100, 100, "processing"),
                         loop
                     )
-            
+
             # Get options
             ydl_opts, final_ext = self._get_ydl_opts(quality, download_id, progress_hook)
-            
+
             # Download
             def _download():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    
+
+                    # Handle playlists
+                    if 'entries' in info and info['entries']:
+                        info = info['entries'][0]
+
                     # Find the downloaded file
                     video_id = info.get('id', '')
                     expected_file = self.downloads_dir / f"{video_id}_{download_id}.{final_ext}"
-                    
+
                     if not expected_file.exists():
-                        # Try to find the file
+                        # Try to find the file with any extension
                         for f in self.downloads_dir.glob(f"{video_id}_{download_id}.*"):
                             if f.is_file():
                                 expected_file = f
                                 break
-                    
+                        # Also try without the video_id pattern
+                        if not expected_file.exists():
+                            for f in self.downloads_dir.glob(f"*_{download_id}.*"):
+                                if f.is_file():
+                                    expected_file = f
+                                    break
+
                     return {
                         'file_path': str(expected_file) if expected_file.exists() else None,
                         'title': info.get('title', 'Unknown'),
@@ -174,15 +233,15 @@ class YouTubeDownloader:
                         'upload_date': info.get('upload_date', ''),
                         'view_count': info.get('view_count', 0),
                     }
-            
+
             download_result = await asyncio.wait_for(
                 loop.run_in_executor(None, _download),
                 timeout=300  # 5 minute timeout
             )
-            
+
             if download_result['file_path'] and os.path.exists(download_result['file_path']):
                 file_size = os.path.getsize(download_result['file_path'])
-                
+
                 result.update({
                     'file_path': download_result['file_path'],
                     'title': download_result['title'],
@@ -193,24 +252,33 @@ class YouTubeDownloader:
                     'upload_date': download_result['upload_date'],
                     'view_count': download_result['view_count'],
                 })
-            
+            else:
+                result['error'] = "Download completed but file not found. Try different quality."
+
             return result
-            
+
         except asyncio.TimeoutError:
-            result['error'] = "Download timed out. Try lower quality."
+            result['error'] = "Download timed out (5 min). Try lower quality."
             return result
         except Exception as e:
             error_msg = str(e)
-            if "filesize" in error_msg.lower():
+            logger.error(f"Download error for {url}: {error_msg}")
+            if "requested format" in error_msg.lower() or "format is not available" in error_msg.lower():
+                result['error'] = "Requested format not available. Try 'Best Quality' or a different resolution."
+            elif "filesize" in error_msg.lower():
                 result['error'] = "File too large. Try lower quality or audio only."
             elif "private" in error_msg.lower() or "unavailable" in error_msg.lower():
                 result['error'] = "This video is private or unavailable."
-            elif "copyright" in error_msg.lower():
-                result['error'] = "This video is blocked due to copyright."
+            elif "copyright" in error_msg.lower() or "blocked" in error_msg.lower():
+                result['error'] = "This video is blocked due to copyright/restrictions."
+            elif "sign in" in error_msg.lower() or "age-restricted" in error_msg.lower():
+                result['error'] = "This video is age-restricted. Try another video."
+            elif "not a video" in error_msg.lower():
+                result['error'] = "URL does not point to a valid video."
             else:
-                result['error'] = f"Download failed: {error_msg[:100]}"
+                result['error'] = f"Download failed: {error_msg[:150]}"
             return result
-    
+
     def cleanup(self, file_path: str):
         """Remove downloaded file"""
         try:
@@ -218,14 +286,14 @@ class YouTubeDownloader:
                 os.remove(file_path)
         except Exception:
             pass
-    
+
     async def get_available_qualities(self, url: str) -> list:
         """Get available qualities for a video"""
         try:
             info = await self.get_info(url)
             if not info or not info.get('formats'):
                 return ["720", "360", "audio"]
-            
+
             qualities = set()
             for fmt in info['formats']:
                 height = fmt.get('height')
@@ -246,17 +314,17 @@ class YouTubeDownloader:
                         qualities.add("240")
                     else:
                         qualities.add("144")
-            
+
             result = []
             for q in ["2160", "1440", "1080", "720", "480", "360", "240", "144"]:
                 if q in qualities:
                     result.append(q)
-            
+
             if not result:
                 result = ["720", "360"]
-            
+
             result.append("audio")
             return result
-            
+
         except Exception:
             return ["720", "360", "audio"]
