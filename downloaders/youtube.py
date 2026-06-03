@@ -39,7 +39,7 @@ class YouTubeDownloader:
         else:
             # Robust format selection with fallback chains for all YouTube videos including Shorts
             # Format sort prefers mp4/m4a for Telegram compatibility
-            # The chain tries: merged format → separate video+audio → absolute fallback
+            # The chain tries: merged format -> separate video+audio -> absolute fallback
             quality_map = {
                 "144":  ("best[height<=144][ext=mp4]/best[height<=144]/"
                          "bestvideo*[height<=144][ext=mp4]+bestaudio[ext=m4a]/"
@@ -70,10 +70,10 @@ class YouTubeDownloader:
                          "bestvideo*+bestaudio/best"),
             }
             format_spec = quality_map.get(quality, quality_map["720"])
-            postprocessors = [{
-                'key': 'FFmpegVideoConvertor',
-                'preferredformat': 'mp4',
-            }]
+            # FIX: Removed FFmpegVideoConvertor postprocessor since merge_output_format
+            # already ensures mp4 output. This fixes the yt-dlp compatibility error:
+            # "FFmpegVideoConvertorPP.__init__() got an unexpected keyword argument 'preferredformat'"
+            postprocessors = []
             final_ext = "mp4"
 
         opts = {
@@ -91,7 +91,6 @@ class YouTubeDownloader:
             'merge_output_format': 'mp4',
             'ignore_no_formats_error': True,
             'format_sort': ['res', 'ext:mp4:m4a'],
-            'cookiesfrombrowser': None,
         }
 
         # Add cookies if file exists and is not empty
