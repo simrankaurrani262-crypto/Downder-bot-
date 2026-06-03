@@ -17,6 +17,20 @@ from utils.helpers import (
 
 logger = logging.getLogger(__name__)
 
+# Player clients that work WITHOUT PO token on server/datacenter IPs (Render, Railway, etc.)
+# ios/mweb/web/web_creator ALL require PO tokens from YouTube since late 2024 and will return
+# "No video formats found" on server IPs.  android and tv_embedded do NOT require PO tokens.
+_SERVER_SAFE_CLIENTS = ['android', 'tv_embedded']
+
+
+def _build_extractor_args() -> dict:
+    return {
+        'youtube': {
+            'player_client': _SERVER_SAFE_CLIENTS,
+            'player_skip': ['webpage', 'configs'],
+        }
+    }
+
 
 class YouTubeDownloader:
     def __init__(self):
@@ -37,42 +51,19 @@ class YouTubeDownloader:
             }]
             final_ext = "mp3"
         else:
-            # Robust format selection with fallback chains for all YouTube videos including Shorts
-            # Format sort prefers mp4/m4a for Telegram compatibility
-            # The chain tries: merged format -> separate video+audio -> absolute fallback
+            # android client returns formats differently — use broader fallback chains
             quality_map = {
-                "144":  ("best[height<=144][ext=mp4]/best[height<=144]/"
-                         "bestvideo*[height<=144][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=144]+bestaudio/best"),
-                "240":  ("best[height<=240][ext=mp4]/best[height<=240]/"
-                         "bestvideo*[height<=240][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=240]+bestaudio/best"),
-                "360":  ("best[height<=360][ext=mp4]/best[height<=360]/"
-                         "bestvideo*[height<=360][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=360]+bestaudio/best"),
-                "480":  ("best[height<=480][ext=mp4]/best[height<=480]/"
-                         "bestvideo*[height<=480][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=480]+bestaudio/best"),
-                "720":  ("best[height<=720][ext=mp4]/best[height<=720]/"
-                         "bestvideo*[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=720]+bestaudio/best"),
-                "1080": ("best[height<=1080][ext=mp4]/best[height<=1080]/"
-                         "bestvideo*[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=1080]+bestaudio/best"),
-                "1440": ("best[height<=1440][ext=mp4]/best[height<=1440]/"
-                         "bestvideo*[height<=1440][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=1440]+bestaudio/best"),
-                "2160": ("best[height<=2160][ext=mp4]/best[height<=2160]/"
-                         "bestvideo*[height<=2160][ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*[height<=2160]+bestaudio/best"),
-                "best": ("best[ext=mp4]/best/"
-                         "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/"
-                         "bestvideo*+bestaudio/best"),
+                "144":  ("bestvideo[height<=144]+bestaudio/best[height<=144]/best"),
+                "240":  ("bestvideo[height<=240]+bestaudio/best[height<=240]/best"),
+                "360":  ("bestvideo[height<=360]+bestaudio/best[height<=360]/best"),
+                "480":  ("bestvideo[height<=480]+bestaudio/best[height<=480]/best"),
+                "720":  ("bestvideo[height<=720]+bestaudio/best[height<=720]/best"),
+                "1080": ("bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"),
+                "1440": ("bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"),
+                "2160": ("bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"),
+                "best": ("bestvideo+bestaudio/best"),
             }
             format_spec = quality_map.get(quality, quality_map["720"])
-            # FIX: Use 'preferedformat' (1 r) not 'preferredformat' (2 r)
-            # yt-dlp uses British spelling - this was the root cause of the error:
-            # "FFmpegVideoConvertorPP.__init__() got an unexpected keyword argument 'preferredformat'"
             postprocessors = [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
@@ -92,24 +83,10 @@ class YouTubeDownloader:
             'skip_unavailable_fragments': True,
             'keepvideo': False,
             'merge_output_format': 'mp4',
-            'ignore_no_formats_error': True,
+            'ignore_no_formats_error': False,
             'format_sort': ['res', 'ext:mp4:m4a'],
-            # Bypass YouTube bot detection on datacenter IPs (Render, etc.)
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'mweb', 'web_creator'],
-                    'player_skip': [],
-                }
-            },
-            'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
-                    'Mobile/15E148 Safari/604.1'
-                ),
-            },
-            'sleep_interval': 1,
-            'max_sleep_interval': 3,
+            # Use android/tv_embedded — the only clients that skip PO-token requirement
+            'extractor_args': _build_extractor_args(),
         }
 
         # Add cookies if file exists and is not empty
@@ -136,21 +113,9 @@ class YouTubeDownloader:
                     'quiet': True,
                     'no_warnings': True,
                     'skip_download': True,
-                    'ignore_no_formats_error': True,
-                    'format': 'best/bestvideo*+bestaudio',
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['ios', 'mweb', 'web_creator'],
-                            'player_skip': [],
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': (
-                            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                            'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
-                            'Mobile/15E148 Safari/604.1'
-                        ),
-                    },
+                    'ignore_no_formats_error': False,
+                    'format': 'bestvideo+bestaudio/best',
+                    'extractor_args': _build_extractor_args(),
                 }
                 # Add cookies if available
                 if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
@@ -160,15 +125,8 @@ class YouTubeDownloader:
                     except OSError:
                         pass
 
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        return ydl.extract_info(url, download=False)
-                except yt_dlp.utils.ExtractorError as e:
-                    logger.warning(f"Extractor error for {url}: {e}")
-                    # Try with less restrictive options
-                    opts['extract_flat'] = True
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        return ydl.extract_info(url, download=False)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
 
             info = await loop.run_in_executor(None, _extract_info)
 
@@ -292,7 +250,9 @@ class YouTubeDownloader:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Download error for {url}: {error_msg}")
-            if "requested format" in error_msg.lower() or "format is not available" in error_msg.lower():
+            if "no video formats found" in error_msg.lower():
+                result['error'] = "YouTube is blocking this download. Please add cookies.txt from a logged-in browser session."
+            elif "requested format" in error_msg.lower() or "format is not available" in error_msg.lower():
                 result['error'] = "Requested format not available. Try 'Best Quality' or a different resolution."
             elif "filesize" in error_msg.lower():
                 result['error'] = "File too large. Try lower quality or audio only."
