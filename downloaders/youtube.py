@@ -87,13 +87,29 @@ class YouTubeDownloader:
             'postprocessors': postprocessors,
             'noplaylist': True,
             'max_filesize': MAX_FILE_SIZE_BYTES,
-            'retries': 5,
-            'fragment_retries': 5,
+            'retries': 10,
+            'fragment_retries': 10,
             'skip_unavailable_fragments': True,
             'keepvideo': False,
             'merge_output_format': 'mp4',
             'ignore_no_formats_error': True,
             'format_sort': ['res', 'ext:mp4:m4a'],
+            # Bypass YouTube bot detection on datacenter IPs (Render, etc.)
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'mweb', 'web_creator'],
+                    'player_skip': [],
+                }
+            },
+            'http_headers': {
+                'User-Agent': (
+                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
+                    'Mobile/15E148 Safari/604.1'
+                ),
+            },
+            'sleep_interval': 1,
+            'max_sleep_interval': 3,
         }
 
         # Add cookies if file exists and is not empty
@@ -122,6 +138,19 @@ class YouTubeDownloader:
                     'skip_download': True,
                     'ignore_no_formats_error': True,
                     'format': 'best/bestvideo*+bestaudio',
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['ios', 'mweb', 'web_creator'],
+                            'player_skip': [],
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': (
+                            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                            'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
+                            'Mobile/15E148 Safari/604.1'
+                        ),
+                    },
                 }
                 # Add cookies if available
                 if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
