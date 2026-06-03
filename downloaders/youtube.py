@@ -27,7 +27,6 @@ def _build_extractor_args() -> dict:
     return {
         'youtube': {
             'player_client': _SERVER_SAFE_CLIENTS,
-            'player_skip': ['webpage', 'configs'],
         }
     }
 
