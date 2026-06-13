@@ -17,9 +17,7 @@ import os
 import sys
 import logging
 import asyncio
-import threading
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,7 +34,7 @@ from telegram.ext import (
 
 # Configuration
 from config import (
-    BOT_TOKEN, ADMIN_IDS, DATABASE_PATH, LOGS_DIR, DOWNLOADS_DIR,
+    BOT_TOKEN, ADMIN_IDS, DATABASE_PATH, LOGS_DIR,
     LOG_LEVEL, validate_config, maintenance_mode
 )
 
@@ -73,77 +71,44 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Lightweight HTTP handler for Render health checks"""
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'OK')
-
-    def log_message(self, format, *args):
-        # Suppress health check logs to avoid noise
-        pass
-
-
-def start_health_server(port=None):
-    """Start a lightweight HTTP server for Render health checks"""
-    if port is None:
-        port = int(os.environ.get("PORT", 8080))
-    try:
-        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        logger.info(f"Health check server started on port {port}")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"Health server error: {e}")
-
-
 class VideoDownloaderBot:
     """Main bot class"""
-
+    
     def __init__(self):
         self.db = None
         self.yt_downloader = None
         self.ig_downloader = None
         self.application = None
-
+    
     async def init_components(self):
         """Initialize bot components"""
         logger.info("Initializing bot components...")
-
+        
         # Validate config
         errors = validate_config()
         if errors:
             for error in errors:
                 logger.error(error)
             sys.exit(1)
-
+        
         # Initialize database
         self.db = Database(str(DATABASE_PATH))
         logger.info("Database initialized")
-
+        
         # Initialize downloaders
         self.yt_downloader = YouTubeDownloader()
         self.ig_downloader = InstagramDownloader()
         logger.info("Downloaders initialized")
-
+    
     async def post_init(self, application: Application):
         """Post initialization hook"""
-        # CRITICAL: Delete any existing webhook and drop pending updates
-        # to prevent 409 Conflict errors from multiple bot instances
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook deleted and pending updates dropped")
-        except Exception as e:
-            logger.warning(f"Could not delete webhook: {e}")
-
         # Store components in bot_data
         application.bot_data['db'] = self.db
         application.bot_data['yt_downloader'] = self.yt_downloader
         application.bot_data['ig_downloader'] = self.ig_downloader
-
+        
         logger.info("Bot post-initialization complete")
-
+        
         # Notify admins that bot is online
         for admin_id in ADMIN_IDS:
             try:
@@ -155,24 +120,24 @@ class VideoDownloaderBot:
                 )
             except Exception:
                 pass
-
+    
     async def post_shutdown(self, application: Application):
         """Post shutdown hook"""
         # Close Instagram downloader session
         if self.ig_downloader:
             await self.ig_downloader.close()
-
+        
         logger.info("Bot shutdown complete")
-
+    
     def setup_handlers(self, application: Application):
         """Register all handlers"""
-
+        
         # Command handlers
         application.add_handler(CommandHandler("start", start_handler))
         application.add_handler(CommandHandler("help", help_handler))
         application.add_handler(CommandHandler("settings", settings_handler))
         application.add_handler(CommandHandler("stats", stats_handler))
-
+        
         # Admin commands
         application.add_handler(CommandHandler("admin", admin_handler))
         application.add_handler(CommandHandler("users", users_handler))
@@ -182,24 +147,24 @@ class VideoDownloaderBot:
         application.add_handler(CommandHandler("user_info", user_info_handler))
         application.add_handler(CommandHandler("logs", logs_handler))
         application.add_handler(CommandHandler("maintenance", maintenance_handler))
-
+        
         # Callback query handler
         application.add_handler(CallbackQueryHandler(callback_handler))
-
+        
         # Message handler (for URLs) - must be last
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler)
         )
-
+        
         # Error handler
         application.add_error_handler(self.error_handler)
-
+        
         logger.info("All handlers registered")
-
+    
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors"""
         logger.error(f"Error: {context.error}", exc_info=True)
-
+        
         if isinstance(update, Update) and update.effective_message:
             try:
                 await update.effective_message.reply_text(
@@ -209,7 +174,7 @@ class VideoDownloaderBot:
                 )
             except Exception:
                 pass
-
+    
     async def cleanup_task(self):
         """Background cleanup task"""
         while True:
@@ -219,27 +184,14 @@ class VideoDownloaderBot:
                 logger.info("Cleanup task completed")
             except Exception as e:
                 logger.error(f"Cleanup error: {e}")
-
+    
     def run(self):
         """Run the bot"""
         logger.info("Starting Video Downloader Bot...")
-
-        # Start health check server in background thread (required for Render)
-        health_port = os.environ.get("PORT")
-        if health_port:
-            health_port = int(health_port)
-            health_thread = threading.Thread(
-                target=start_health_server,
-                args=(health_port,),
-                daemon=True,
-                name="health-server"
-            )
-            health_thread.start()
-            logger.info(f"Health check server thread started on port {health_port}")
-
+        
         # Initialize components
-        asyncio.run(self.init_components())
-
+        asyncio.get_event_loop().run_until_complete(self.init_components())
+        
         # Build application
         self.application = (
             Application.builder()
@@ -248,13 +200,13 @@ class VideoDownloaderBot:
             .post_shutdown(self.post_shutdown)
             .build()
         )
-
+        
         # Setup handlers
         self.setup_handlers(self.application)
-
+        
         logger.info("Bot is starting polling...")
-
-        # Run the bot with explicit webhook deletion
+        
+        # Run the bot
         self.application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
